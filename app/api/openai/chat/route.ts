@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import OpenAI from "openai";
+import { buildChatCompletionRequest } from "@/lib/openai/buildCompletionRequest";
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,23 +36,22 @@ export async function POST(req: NextRequest) {
     const openai = new OpenAI({ apiKey });
     let lastError: Error | null = null;
 
+    const request = buildChatCompletionRequest({
+      model,
+      systemPrompt,
+      userPrompt,
+      maxTokens: max_tokens,
+      temperature,
+      responseFormat: response_format,
+    });
+
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const request: OpenAI.Chat.ChatCompletionCreateParams = {
-          model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          max_tokens,
-          temperature,
-        };
-        if (response_format) {
-          request.response_format = response_format;
-        }
-
         const completion = await openai.chat.completions.create(request);
-        let content = completion.choices[0]?.message?.content?.trim() ?? "";
+        let content =
+          "choices" in completion
+            ? completion.choices[0]?.message?.content?.trim() ?? ""
+            : "";
         content = content.replace(/^\s*["']|["']\s*$/g, "");
 
         if (!content) {
@@ -60,8 +60,8 @@ export async function POST(req: NextRequest) {
 
         return NextResponse.json({
           content,
-          usage: completion.usage,
-          model: completion.model,
+          usage: "usage" in completion ? completion.usage : undefined,
+          model: "model" in completion ? completion.model : model,
         });
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));

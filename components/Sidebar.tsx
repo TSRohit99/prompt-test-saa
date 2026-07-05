@@ -43,7 +43,7 @@ export function Sidebar({
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="border-b border-zinc-200 px-4 py-5 dark:border-zinc-800">
-        <h1 className="text-lg font-semibold tracking-tight">Alpago GPT</h1>
+        <h1 className="text-lg font-semibold tracking-tight">Alpago GPT v2</h1>
         <p className="mt-1 text-xs text-zinc-500">Prompt testing console</p>
       </div>
 

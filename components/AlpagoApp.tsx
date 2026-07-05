@@ -1008,6 +1008,7 @@ export function AlpagoApp() {
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-auto p-4 lg:grid-cols-3">
             <ParamsPanel
               mode={mode}
+              model={model}
               openaiOptions={openaiOptions}
               onOpenAIOptionsChange={setOpenaiOptions}
               onSend={handleSend}
