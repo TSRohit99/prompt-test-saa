@@ -1,4 +1,5 @@
 import type { Belief, MindScanAnswer, MindScanRecord, ShadowAnswer } from "@/lib/types";
+import { getShadowQuestionsForCategory } from "@/lib/constants/shadowAnalysisQuestions";
 
 export const SAMPLE_PREVIOUS_EXPERIENCE =
   "No matter how much I try, money still never stays with me.";
@@ -90,30 +91,19 @@ export const SAMPLE_MINDSCAN: Omit<MindScanRecord, "id" | "scanId" | "createdAt"
   previousExperience: SAMPLE_PREVIOUS_EXPERIENCE,
 };
 
-export const SAMPLE_SHADOW_ANSWERS: ShadowAnswer[] = [
-  {
-    questionIndex: 0,
-    question: "What quality in others irritates you most?",
-    answer: "People who spend freely without worrying.",
-  },
-  {
-    questionIndex: 1,
-    question: "What do you secretly envy?",
-    answer: "People who can relax when money is good.",
-  },
-  {
-    questionIndex: 2,
-    question: "What kind of person do you fear becoming?",
-    answer: "Someone careless who loses everything.",
-  },
-  {
-    questionIndex: 3,
-    question: "What does the silenced part of you want?",
-    answer: "To enjoy what I have without guilt.",
-  },
-  {
-    questionIndex: 4,
-    question: "If this hidden part could speak, what would it say?",
-    answer: "Stop treating every good moment like a trap.",
-  },
-];
+export const SAMPLE_SHADOW_ANSWERS: ShadowAnswer[] = (() => {
+  const questions =
+    getShadowQuestionsForCategory("Money & Abundance Beliefs") ?? [];
+  const sampleTexts = [
+    "People who spend freely without worrying — it feels reckless and unfair.",
+    "Ease and a sense of security when money is good.",
+    "More comfort and freedom without having to earn it first.",
+    "Selfish or greedy — someone who lost their values.",
+    "I want to rest and receive without guilt.",
+  ];
+  return questions.map((q, index) => ({
+    questionIndex: index,
+    question: q.text,
+    answer: sampleTexts[index] ?? "",
+  }));
+})();

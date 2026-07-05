@@ -1,10 +1,12 @@
 import type { ChatMessage } from "@/lib/types";
+import { formatCategoriesForPrompt } from "@/lib/utils/promptFormatters";
 
 export const createSummaryPrompts = (
   messages: ChatMessage[],
   previousSummary: string,
-  categories: string[] | null = null
+  categories: unknown = null
 ) => {
+    const categoriesStr = formatCategoriesForPrompt(categories);
     const createSummarySysPrompt = `
   You are an intelligent conversation summarizer for a personal healing app.
   
@@ -18,7 +20,7 @@ export const createSummaryPrompts = (
   5. **Progress** — Any shifts in their thinking? Moments of clarity or relief?
   6. **Unresolved things** — What's still open, still hurting, still unclear?
   
-  ${categories ? `**Healing focus:** ${categories} — Keep summaries tied to this theme.\n` : ""}
+  ${categoriesStr ? `**Healing focus:** ${categoriesStr} — Keep summaries tied to this theme.\n` : ""}
   
   Output format (for clarity):
   - Start with a 1-2 sentence overview
@@ -33,7 +35,7 @@ export const createSummaryPrompts = (
     const createSummaryUsrPrompt = `
   Summarize this conversation accurately and helpfully.
   
-  ${categories ? `Healing focus: ${categories}\n` : ""}
+  ${categoriesStr ? `Healing focus: ${categoriesStr}\n` : ""}
   
   Previous context:
   ${previousSummary || "This is the first summary."}

@@ -1,10 +1,22 @@
+import {
+  formatBeliefsForPrompt,
+  formatCategoriesForPrompt,
+  formatContextForPrompt,
+  formatTagsForPrompt,
+} from "@/lib/utils/promptFormatters";
+
 export const createResponsePrompts = (
   question: string,
-  context: string,
+  context: unknown,
   negativeBeliefs: unknown,
   tags: unknown = null,
-  categories: string[] | null = null
+  categories: unknown = null
 ) => {
+  const categoriesStr = formatCategoriesForPrompt(categories);
+  const contextStr = formatContextForPrompt(context);
+  const beliefsStr = formatBeliefsForPrompt(negativeBeliefs);
+  const tagsStr = formatTagsForPrompt(tags);
+
   const createResponseSysPrompt = `
 You are Guru — a warm, wise inner voice. Like a trusted friend or mentor who really listens.
 
@@ -45,19 +57,23 @@ When to affirm or reflect instead:
 - When they just need validation, not exploration
 
 Length: Keep responses natural. Could be 1 sentence. Could be 3. Never force it.
+
+OUTPUT FORMAT:
+- Reply with plain text only — Guru's spoken words, nothing else.
+- No JSON, no markdown headers, no code fences, and no role labels like "guru:" or { "role": "guru" }.
 `;
 
 
 const createResponseUsrPrompt = `
 You are responding to the user as Guru. Keep it natural and human.
 
-${categories ? `Their healing focus right now: ${categories}\n` : ""}
+${categoriesStr ? `Their healing focus right now: ${categoriesStr}\n` : ""}
 
-${context ? `What we've been talking about:\n${context}\n` : ""}
+${contextStr ? `What we've been talking about:\n${contextStr}\n` : ""}
 
-${negativeBeliefs ? `What the user shared about themselves:\n${negativeBeliefs}\n` : ""}
+${beliefsStr ? `What the user shared about themselves:\n${beliefsStr}\n` : ""}
 
-${tags ? `Their patterns:\n${tags}\n` : ""}
+${tagsStr ? `Their patterns:\n${tagsStr}\n` : ""}
 
 User just said:
 "${question}"

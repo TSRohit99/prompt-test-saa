@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatThread } from "@/components/ChatThread";
 import { OutputPanel } from "@/components/OutputPanel";
 import { QuestionAnswerForm } from "@/components/QuestionAnswerForm";
+import { ShadowAnswerForm } from "@/components/ShadowAnswerForm";
 import { ParamsPanel } from "@/components/ParamsPanel";
 import { PromptEditor } from "@/components/PromptEditor";
 import { Sidebar } from "@/components/Sidebar";
@@ -13,6 +14,7 @@ import {
   MINDSCAN_QUESTION_OPENAI_OPTIONS,
   SHADOW_OPENAI_OPTIONS,
 } from "@/lib/constants/mindscan";
+import { getShadowQuestionsForCategory } from "@/lib/constants/shadowAnalysisQuestions";
 import {
   buildBeliefDetectorPrompts,
   buildMirrorPrompts,
@@ -32,6 +34,7 @@ import {
   validateShadowReport,
 } from "@/lib/flows/shadow";
 import { postChat } from "@/lib/openai/client";
+import { sanitizeChatResponse } from "@/lib/utils/sanitizeChatResponse";
 import { formatBeliefsForPrompt } from "@/lib/utils/beliefFormatters";
 import { convertToJson } from "@/lib/utils/convertToJson";
 import { getTopTags } from "@/lib/utils/getTopTags";
@@ -60,6 +63,12 @@ import {
   setStoredMode,
 } from "@/lib/storage/settings";
 import {
+  clearAllModePromptSnapshots,
+  getModePromptSnapshot,
+  saveModePromptSnapshot,
+  type ModePromptSnapshot,
+} from "@/lib/storage/modePrompts";
+import {
   SAMPLE_ANSWERS,
   SAMPLE_MINDSCAN,
   SAMPLE_PREVIOUS_BELIEFS,
@@ -78,13 +87,24 @@ import type {
   RunHistoryEntry,
   ShadowAnswer,
 } from "@/lib/types";
+import { DEFAULT_GURU_WELCOME, MINDSCAN_CATEGORIES } from "@/lib/types";
 import type {
   QuestionAnswerWithTags,
   QuestionSetRecord,
 } from "@/lib/types/questions";
 
 const EMPTY_ANSWERS: QuestionAnswerWithTags[] = [];
-import { DEFAULT_GURU_WELCOME, MINDSCAN_CATEGORIES } from "@/lib/types";
+
+function getDefaultOpenaiOptionsForMode(mode: PromptMode): OpenAIOptions {
+  switch (mode) {
+    case "questions":
+      return MINDSCAN_QUESTION_OPENAI_OPTIONS;
+    case "shadow":
+      return SHADOW_OPENAI_OPTIONS;
+    default:
+      return DEFAULT_OPENAI_OPTIONS;
+  }
+}
 
 function Field({
   label,
@@ -127,6 +147,13 @@ export function AlpagoApp() {
     systemPrompt: "",
     userPrompt: "",
   });
+  const promptDirtyRef = useRef({ system: false, user: false });
+  const mirrorPromptDirtyRef = useRef({ system: false, user: false });
+  const skipPersistRef = useRef(false);
+  const isFirstModeEffectRef = useRef(true);
+  const hasPersistedOnceRef = useRef(false);
+  const modeRef = useRef<PromptMode>(mode);
+  modeRef.current = mode;
 
   // Questions params
   const [category, setCategory] = useState<MindScanCategory>(
@@ -165,7 +192,9 @@ export function AlpagoApp() {
   // Shadow params
   const [mindScans, setMindScans] = useState<MindScanRecord[]>([]);
   const [selectedScanId, setSelectedScanId] = useState<number | "">("");
-  const [shadowAnswersJson, setShadowAnswersJson] = useState("[]");
+  const [shadowAnswers, setShadowAnswers] = useState<ShadowAnswer[]>([]);
+  const [showShadowAnswerForm, setShowShadowAnswerForm] = useState(false);
+  const shadowScanKeyRef = useRef("");
 
   useEffect(() => {
     setApiKeyState(getApiKey());
@@ -224,6 +253,21 @@ export function AlpagoApp() {
     }
   };
 
+  const selectedScan =
+    mindScans.find((s) => s.scanId === selectedScanId) ?? null;
+  const shadowQuestions =
+    getShadowQuestionsForCategory(selectedScan?.categories[0]) ?? [];
+
+  useEffect(() => {
+    const key = selectedScan
+      ? `${selectedScan.scanId}-${selectedScan.categories[0]}`
+      : "";
+    if (shadowScanKeyRef.current && key && key !== shadowScanKeyRef.current) {
+      setShadowAnswers([]);
+    }
+    shadowScanKeyRef.current = key;
+  }, [selectedScan]);
+
   const loadChatSession = async (id: string) => {
     let session = await db.chatSessions.get(id);
     if (!session) {
@@ -267,27 +311,77 @@ export function AlpagoApp() {
     return result;
   };
 
-  const applyDefaultPrompts = useCallback(
-    (pair: PromptPair) => {
-      defaultPromptsRef.current = pair;
-      setSystemPrompt(pair.systemPrompt);
-      setUserPrompt(pair.userPrompt);
-    },
-    []
-  );
+  const syncDefaultPrompts = useCallback((pair: PromptPair) => {
+    defaultPromptsRef.current = pair;
+    if (!promptDirtyRef.current.system) setSystemPrompt(pair.systemPrompt);
+    if (!promptDirtyRef.current.user) setUserPrompt(pair.userPrompt);
+  }, []);
+
+  const syncMirrorDefaultPrompts = useCallback((pair: PromptPair) => {
+    defaultMirrorPromptsRef.current = pair;
+    if (!mirrorPromptDirtyRef.current.system) {
+      setMirrorSystemPrompt(pair.systemPrompt);
+    }
+    if (!mirrorPromptDirtyRef.current.user) {
+      setMirrorUserPrompt(pair.userPrompt);
+    }
+  }, []);
+
+  const buildSnapshot = useCallback((): ModePromptSnapshot => {
+    return {
+      systemPrompt,
+      userPrompt,
+      mirrorSystemPrompt,
+      mirrorUserPrompt,
+      analyzePromptTarget,
+      dirty: { ...promptDirtyRef.current },
+      mirrorDirty: { ...mirrorPromptDirtyRef.current },
+      defaultSystemPrompt: defaultPromptsRef.current.systemPrompt,
+      defaultUserPrompt: defaultPromptsRef.current.userPrompt,
+      defaultMirrorSystemPrompt: defaultMirrorPromptsRef.current.systemPrompt,
+      defaultMirrorUserPrompt: defaultMirrorPromptsRef.current.userPrompt,
+      openaiOptions,
+    };
+  }, [
+    systemPrompt,
+    userPrompt,
+    mirrorSystemPrompt,
+    mirrorUserPrompt,
+    analyzePromptTarget,
+    openaiOptions,
+  ]);
+
+  const applySnapshot = useCallback((snapshot: ModePromptSnapshot) => {
+    skipPersistRef.current = true;
+    defaultPromptsRef.current = {
+      systemPrompt: snapshot.defaultSystemPrompt,
+      userPrompt: snapshot.defaultUserPrompt,
+    };
+    defaultMirrorPromptsRef.current = {
+      systemPrompt: snapshot.defaultMirrorSystemPrompt,
+      userPrompt: snapshot.defaultMirrorUserPrompt,
+    };
+    promptDirtyRef.current = { ...snapshot.dirty };
+    mirrorPromptDirtyRef.current = { ...snapshot.mirrorDirty };
+    setSystemPrompt(snapshot.systemPrompt);
+    setUserPrompt(snapshot.userPrompt);
+    setMirrorSystemPrompt(snapshot.mirrorSystemPrompt);
+    setMirrorUserPrompt(snapshot.mirrorUserPrompt);
+    setAnalyzePromptTarget(snapshot.analyzePromptTarget);
+    setOpenaiOptions(snapshot.openaiOptions);
+  }, []);
 
   const rebuildPromptsForMode = useCallback(() => {
     try {
       if (mode === "questions") {
         const beliefs = JSON.parse(previousBeliefsJson) as Belief[];
-        applyDefaultPrompts(
+        syncDefaultPrompts(
           buildQuestionsPrompts(
             category,
             previousExperience,
             formatBeliefsForPrompt(beliefs)
           )
         );
-        setOpenaiOptions(MINDSCAN_QUESTION_OPENAI_OPTIONS);
       } else if (mode === "analyze") {
         const params = {
           answers: JSON.parse(answersJson),
@@ -296,13 +390,8 @@ export function AlpagoApp() {
           previousExperience,
           previousBeliefs: JSON.parse(previousBeliefsJson) as Belief[],
         };
-        const belief = buildBeliefDetectorPrompts(params);
-        const mirror = buildMirrorPrompts(params);
-        applyDefaultPrompts(belief);
-        defaultMirrorPromptsRef.current = mirror;
-        setMirrorSystemPrompt(mirror.systemPrompt);
-        setMirrorUserPrompt(mirror.userPrompt);
-        setOpenaiOptions(DEFAULT_OPENAI_OPTIONS);
+        syncDefaultPrompts(buildBeliefDetectorPrompts(params));
+        syncMirrorDefaultPrompts(buildMirrorPrompts(params));
       } else if (mode === "chat") {
         if (!chatSession) return;
         const ctx = {
@@ -320,19 +409,19 @@ export function AlpagoApp() {
               JSON.stringify(chatSession.messages, null, 2),
               ctx
             );
-        applyDefaultPrompts(context);
-        setOpenaiOptions(DEFAULT_OPENAI_OPTIONS);
+        syncDefaultPrompts(context);
       } else if (mode === "shadow") {
-        const scan = mindScans.find((s) => s.scanId === selectedScanId);
-        if (scan) {
-          applyDefaultPrompts(
-            buildShadowPrompts(
-              scan,
-              JSON.parse(shadowAnswersJson) as ShadowAnswer[]
-            )
-          );
-        }
-        setOpenaiOptions(SHADOW_OPENAI_OPTIONS);
+        const scan: MindScanRecord = selectedScan ?? {
+          ...SAMPLE_MINDSCAN,
+          scanId: 0,
+          createdAt: 0,
+        };
+        syncDefaultPrompts(
+          buildShadowPrompts(
+            scan,
+            shadowAnswers.length > 0 ? shadowAnswers : SAMPLE_SHADOW_ANSWERS
+          )
+        );
       }
     } catch {
       // invalid JSON while typing — skip rebuild
@@ -352,15 +441,60 @@ export function AlpagoApp() {
     userMessage,
     mindScans,
     selectedScanId,
-    shadowAnswersJson,
-    applyDefaultPrompts,
+    selectedScan,
+    shadowAnswers,
+    syncDefaultPrompts,
+    syncMirrorDefaultPrompts,
   ]);
 
   useEffect(() => {
     rebuildPromptsForMode();
   }, [rebuildPromptsForMode]);
 
+  useEffect(() => {
+    const saved = getModePromptSnapshot(mode);
+    if (saved) {
+      applySnapshot(saved);
+    } else if (!isFirstModeEffectRef.current) {
+      promptDirtyRef.current = { system: false, user: false };
+      mirrorPromptDirtyRef.current = { system: false, user: false };
+      setOpenaiOptions(getDefaultOpenaiOptionsForMode(mode));
+    } else {
+      // First load: drop json_object on modes that don't use it (stale localStorage)
+      const defaults = getDefaultOpenaiOptionsForMode(mode);
+      if (!defaults.response_format && openaiOptions.response_format) {
+        setOpenaiOptions(defaults);
+      }
+    }
+    isFirstModeEffectRef.current = false;
+  }, [mode, applySnapshot]);
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+    if (!hasPersistedOnceRef.current) {
+      hasPersistedOnceRef.current = true;
+      return;
+    }
+    saveModePromptSnapshot(modeRef.current, buildSnapshot());
+  }, [
+    systemPrompt,
+    userPrompt,
+    mirrorSystemPrompt,
+    mirrorUserPrompt,
+    analyzePromptTarget,
+    openaiOptions,
+    buildSnapshot,
+  ]);
+
   const handleModeChange = (m: PromptMode) => {
+    saveModePromptSnapshot(mode, buildSnapshot());
+    if (!getModePromptSnapshot(m)) {
+      promptDirtyRef.current = { system: false, user: false };
+      mirrorPromptDirtyRef.current = { system: false, user: false };
+    }
     setMode(m);
     setStoredMode(m);
     setError(null);
@@ -518,6 +652,8 @@ export function AlpagoApp() {
         });
         await recordRun("Chat Response", responseResult, systemPrompt, userPrompt);
 
+        const guruContent = sanitizeChatResponse(responseResult.content);
+
         const updatedMessages = [
           ...session.messages,
           {
@@ -527,7 +663,7 @@ export function AlpagoApp() {
           },
           {
             role: "guru" as const,
-            content: responseResult.content,
+            content: guruContent,
             timeStamp: Date.now(),
           },
         ];
@@ -542,22 +678,31 @@ export function AlpagoApp() {
         setChatSession(updated);
         setUserMessage("");
         setForceSummary(false);
-        setLatestResponse(responseResult.content);
+        setLatestResponse(guruContent);
       } else if (mode === "shadow") {
-        const scan = mindScans.find((s) => s.scanId === selectedScanId);
+        const scan = selectedScan;
         if (!scan) throw new Error("Select a MindScan first.");
         if (!scan.mirrorResult?.length) {
           throw new Error("MindScan must have mirror result.");
         }
+        if (shadowAnswers.length !== 5) {
+          throw new Error("Answer all 5 shadow questions first.");
+        }
+        const prompts = buildShadowPrompts(scan, shadowAnswers);
 
         const result = await postChat({
           apiKey: key,
           model,
-          systemPrompt,
-          userPrompt,
+          systemPrompt: prompts.systemPrompt,
+          userPrompt: prompts.userPrompt,
           options: openaiOptions,
         });
-        await recordRun("Shadow Analysis", result, systemPrompt, userPrompt);
+        await recordRun(
+          "Shadow Analysis",
+          result,
+          prompts.systemPrompt,
+          prompts.userPrompt
+        );
 
         const parsed = convertToJson(result.content) as {
           report?: Record<string, string>;
@@ -588,6 +733,12 @@ export function AlpagoApp() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSaveShadowAnswers = (answers: ShadowAnswer[]) => {
+    setShadowAnswers(answers);
+    setShowShadowAnswerForm(false);
+    setError(null);
   };
 
   const handleSaveAnswers = async (answers: QuestionAnswerWithTags[]) => {
@@ -637,7 +788,7 @@ export function AlpagoApp() {
       setChatBeliefs(JSON.stringify(SAMPLE_PREVIOUS_BELIEFS, null, 2));
       setUserMessage("I keep feeling like even when money comes, I can't relax.");
     } else if (mode === "shadow") {
-      setShadowAnswersJson(JSON.stringify(SAMPLE_SHADOW_ANSWERS, null, 2));
+      setShadowAnswers(SAMPLE_SHADOW_ANSWERS);
     }
   };
 
@@ -672,6 +823,7 @@ export function AlpagoApp() {
   const handleClearData = async () => {
     if (!confirm("Clear all IndexedDB data?")) return;
     await clearAllData();
+    clearAllModePromptSnapshots();
     setRuns([]);
     setMindScans([]);
     setQuestionSets([]);
@@ -937,6 +1089,7 @@ export function AlpagoApp() {
     }
 
     if (mode === "shadow") {
+      const answeredCount = shadowAnswers.filter((a) => a.answer?.trim()).length;
       return (
         <>
           <Field label="MindScan">
@@ -962,14 +1115,42 @@ export function AlpagoApp() {
               Run Analyze Answers first to create a MindScan.
             </p>
           )}
-          <Field label="Shadow answers (JSON, 5 items)">
-            <textarea
-              value={shadowAnswersJson}
-              onChange={(e) => setShadowAnswersJson(e.target.value)}
-              rows={10}
-              className={textareaClass}
-            />
-          </Field>
+          {selectedScan && (
+            <>
+              <p className="text-xs text-zinc-500">
+                Category: {selectedScan.categories[0]}
+              </p>
+              {shadowQuestions.length === 0 ? (
+                <p className="text-xs text-amber-600">
+                  No shadow questions for this MindScan category.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-zinc-500">
+                    Shadow answers: {answeredCount}/5
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShowShadowAnswerForm(true)}
+                    disabled={!shadowQuestions.length}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                  >
+                    {answeredCount === 5 ? "Edit shadow answers" : "Answer shadow questions"}
+                  </button>
+                  {answeredCount === 5 && (
+                    <div className="space-y-1 rounded-md border border-zinc-100 p-2 dark:border-zinc-800">
+                      {shadowAnswers.map((a, i) => (
+                        <p key={i} className="text-xs text-zinc-600 dark:text-zinc-400">
+                          <span className="font-medium">Layer {i + 1}:</span>{" "}
+                          {a.answer}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </>
       );
     }
@@ -1032,20 +1213,25 @@ export function AlpagoApp() {
               }
               onSystemChange={(v) => {
                 if (mode === "analyze" && analyzePromptTarget === "mirror") {
+                  mirrorPromptDirtyRef.current.system = true;
                   setMirrorSystemPrompt(v);
                 } else {
+                  promptDirtyRef.current.system = true;
                   setSystemPrompt(v);
                 }
               }}
               onUserChange={(v) => {
                 if (mode === "analyze" && analyzePromptTarget === "mirror") {
+                  mirrorPromptDirtyRef.current.user = true;
                   setMirrorUserPrompt(v);
                 } else {
+                  promptDirtyRef.current.user = true;
                   setUserPrompt(v);
                 }
               }}
               onReset={() => {
                 if (mode === "analyze" && analyzePromptTarget === "mirror") {
+                  mirrorPromptDirtyRef.current = { system: false, user: false };
                   setMirrorSystemPrompt(
                     defaultMirrorPromptsRef.current.systemPrompt
                   );
@@ -1053,6 +1239,7 @@ export function AlpagoApp() {
                     defaultMirrorPromptsRef.current.userPrompt
                   );
                 } else {
+                  promptDirtyRef.current = { system: false, user: false };
                   setSystemPrompt(defaultPromptsRef.current.systemPrompt);
                   setUserPrompt(defaultPromptsRef.current.userPrompt);
                 }
@@ -1105,6 +1292,19 @@ export function AlpagoApp() {
                 initialAnswers={activeQuestionSet.answers ?? EMPTY_ANSWERS}
                 onSave={handleSaveAnswers}
                 onCancel={() => setShowAnswerForm(false)}
+              />
+            )}
+
+          {mode === "shadow" &&
+            showShadowAnswerForm &&
+            selectedScan &&
+            shadowQuestions.length > 0 && (
+              <ShadowAnswerForm
+                scanKey={`${selectedScan.scanId}-${selectedScan.categories[0]}`}
+                questions={shadowQuestions}
+                initialAnswers={shadowAnswers}
+                onSave={handleSaveShadowAnswers}
+                onCancel={() => setShowShadowAnswerForm(false)}
               />
             )}
 

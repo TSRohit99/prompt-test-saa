@@ -1,6 +1,11 @@
+import {
+  formatAnswersForBeliefDetector,
+  formatCategoriesForBeliefDetector,
+} from "@/lib/utils/promptFormatters";
+
 export const beliefDetectorPrompts = (
-  answers: string,
-  categories: string
+  answers: unknown,
+  categories: unknown
 ) => {
   const beliefDetectorSysPrompt = `You are Guru, a warm and precise self-reflection AI for a MindScan app.
 
@@ -120,8 +125,8 @@ Use the provided categories only.
 
 Input:
 {
-  "categories": ${categories},
-  "data": ${answers}
+  "categories": ${formatCategoriesForBeliefDetector(categories)},
+  "data": ${formatAnswersForBeliefDetector(answers)}
 }
 
 Return the result in the specified JSON format with no additional text.
